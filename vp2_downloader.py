@@ -194,6 +194,7 @@ class VantageProtocol:
     
         print("✓ CRC OK → enviando ACK")
         self.ser.write(b'\x06')
+        time.sleep(0.2)
         return page
     
     def _parse_page(self, page: bytes, page_num: int, first_record: int) -> List[dict]:
