@@ -170,21 +170,30 @@ class VantageProtocol:
         return records
     
     def _download_page(self) -> Optional[bytes]:
-        """Descargar una página de 267 bytes"""
+        print("Esperando página de 267 bytes...")
         page = self.ser.read(267)
-        if len(page) != 267:
+        received_len = len(page)
+        print(f"Recibidos {received_len} bytes")
+    
+        if received_len != 267:
+            print(f"Timeout o incompleto - bytes recibidos: {received_len}")
+            if received_len > 0:
+                print(f"Primeros bytes: {page.hex()[:50]}...")
             return None
-        
-        # Verificar CRC
+    
         data = page[:-2]
         crc_received = struct.unpack('>H', page[-2:])[0]
         crc_calculated = self.calculate_crc(data)
-        
+    
+        print(f"CRC recibido: 0x{crc_received:04X}, calculado: 0x{crc_calculated:04X}")
+    
         if crc_received != crc_calculated:
-            self.ser.write(b'\x21')  # NAK
+            print("✗ CRC inválido → enviando NAK")
+            self.ser.write(b'\x21')
             return None
-        
-        self.ser.write(b'\x06')  # ACK
+    
+        print("✓ CRC OK → enviando ACK")
+        self.ser.write(b'\x06')
         return page
     
     def _parse_page(self, page: bytes, page_num: int, first_record: int) -> List[dict]:
