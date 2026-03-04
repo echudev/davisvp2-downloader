@@ -386,8 +386,10 @@ class VantageProtocol:
 
         print(f"Páginas a descargar: {num_pages}, Primer registro: {first_record}")
 
-        # Comenzar descarga
+        # Comenzar descarga - pausa crítica para que la consola prepare la primera página
         self.ser.write(b"\x06")
+        time.sleep(1.5)
+        self.ser.reset_input_buffer()
 
         records = []
         for page_num in range(num_pages):
