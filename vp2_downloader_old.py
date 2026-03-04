@@ -4,23 +4,13 @@ Script para descargar datos históricos de consolas Davis Vantage Pro/Pro2/Vue
 Basado en el protocolo de comunicación serial Rev 2.5
 """
 
-import configparser
-import csv
-import os
 import serial
 import struct
 import time
 from datetime import datetime, timedelta
 from typing import Optional, List
+import csv
 import pandas as pd
-
-# ── Cargar configuración desde davis.conf ──
-_cfg = configparser.ConfigParser()
-_cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "davis.conf"))
-
-DEFAULT_PORT = _cfg.get("serial", "DEFAULT_PORT", fallback="/dev/ttyUSB0")
-DEFAULT_BAUD = _cfg.getint("serial", "DEFAULT_BAUD", fallback=19200)
-DEFAULT_TIMEOUT = _cfg.getfloat("serial", "DEFAULT_TIMEOUT", fallback=1.2)
 
 
 class VantageProtocol:
@@ -286,13 +276,13 @@ class VantageProtocol:
         0x1EF0,
     ]
 
-    def __init__(self, port: str, baudrate: int = DEFAULT_BAUD):
+    def __init__(self, port: str, baudrate: int = 19200):
         """
         Inicializar conexión serial
 
         Args:
             port: Puerto serial (ej: 'COM3' en Windows, '/dev/ttyUSB0' en Linux)
-            baudrate: Velocidad de comunicación (por defecto desde davis.conf)
+            baudrate: Velocidad de comunicación (por defecto 19200)
         """
         self.ser = serial.Serial(
             port=port,
@@ -300,7 +290,7 @@ class VantageProtocol:
             bytesize=8,
             parity=serial.PARITY_NONE,
             stopbits=1,
-            timeout=10.0,
+            timeout=1.2,
         )
         time.sleep(0.5)
 
@@ -405,58 +395,10 @@ class VantageProtocol:
         print(f"\n✓ Descarga completa: {len(records)} registros obtenidos")
         return records
 
-    def download_full_dump(self) -> List[dict]:
-        """Descarga completa usando comando DMP (más estable)"""
-        if not self.wake_up():
-            return []
-
-        print("Descargando DUMP COMPLETO de todos los registros...")
-
-        if not self.send_command("DMP"):
-            print("✗ Error enviando comando DMP")
-            return []
-
-        # Leer header
-        header = self.ser.read(6)
-        if len(header) < 6:
-            print("✗ Error leyendo header")
-            return []
-
-        num_pages = struct.unpack("<H", header[0:2])[0]
-        first_record = struct.unpack("<H", header[2:4])[0]
-        print(f"Páginas a descargar: {num_pages} | Primer registro: {first_record}")
-
-        # ACK inicial + PAUSA CRÍTICA para que la consola prepare la primera página
-        self.ser.write(b"\x06")
-        print("✓ ACK inicial enviado - esperando primera página...")
-        time.sleep(1.5)
-        self.ser.reset_input_buffer()
-
-        records = []
-        for page_num in range(num_pages):
-            page_data = self._download_page()
-            if page_data:
-                page_records = self._parse_page(page_data, page_num, first_record)
-                records.extend(page_records)
-                print(
-                    f"Página {page_num + 1}/{num_pages} → {len(page_records)} registros"
-                )
-            else:
-                print(f"✗ Error en página {page_num + 1} → se detiene")
-                break
-
-        print(f"\n✓ Descarga completa: {len(records)} registros obtenidos")
-        return records
-
     def _download_page(self) -> Optional[bytes]:
         """Descargar una página de 267 bytes"""
         page = self.ser.read(267)
-        received_len = len(page)
-
-        if received_len != 267:
-            print(f"✗ Página incompleta: {received_len} bytes (timeout)")
-            if received_len > 0:
-                print(f"   Primeros bytes: {page.hex()[:40]}...")
+        if len(page) != 267:
             return None
 
         # Verificar CRC
@@ -465,12 +407,10 @@ class VantageProtocol:
         crc_calculated = self.calculate_crc(data)
 
         if crc_received != crc_calculated:
-            print("✗ CRC inválido")
             self.ser.write(b"\x21")  # NAK
             return None
 
         self.ser.write(b"\x06")  # ACK
-        time.sleep(0.15)
         return page
 
     def _parse_page(self, page: bytes, page_num: int, first_record: int) -> List[dict]:
@@ -523,26 +463,29 @@ class VantageProtocol:
             timestamp = datetime(year, month, day, hour, minute)
 
             # Detectar formato: byte 42 identifica Rev A (0xFF) vs Rev B (0x00)
+            # Ambos formatos comparten campos 0-29, divergen a partir de byte 30
             is_rev_a = data[42] == 0xFF
 
             # Campos comunes (offsets 0-29) para Rev A y Rev B
-            out_temp_raw = struct.unpack("<h", data[4:6])[0]
-            high_temp_raw = struct.unpack("<h", data[6:8])[0]
-            low_temp_raw = struct.unpack("<h", data[8:10])[0]
-            rain_clicks = struct.unpack("<H", data[10:12])[0]
-            high_rain_rate_clicks = struct.unpack("<H", data[12:14])[0]
-            barometer_raw = struct.unpack("<H", data[14:16])[0]
-            solar_rad_raw = struct.unpack("<H", data[16:18])[0]
-            num_wind_samples = struct.unpack("<H", data[18:20])[0]
-            in_temp_raw = struct.unpack("<h", data[20:22])[0]
-            in_humidity_raw = data[22]
-            out_humidity_raw = data[23]
-            avg_wind_speed_raw = data[24]
-            high_wind_speed_raw = data[25]
-            dir_high_wind_raw = data[26]
-            prevailing_dir_raw = data[27]
-            avg_uv_raw = data[28]
-            et_raw = data[29]
+            out_temp_raw = struct.unpack("<h", data[4:6])[0]  # °F/10, dash=32767
+            high_temp_raw = struct.unpack("<h", data[6:8])[0]  # °F/10, dash=-32768
+            low_temp_raw = struct.unpack("<h", data[8:10])[0]  # °F/10, dash=32767
+            rain_clicks = struct.unpack("<H", data[10:12])[0]  # clicks, dash=0
+            high_rain_rate_clicks = struct.unpack("<H", data[12:14])[
+                0
+            ]  # clicks/hr, dash=0
+            barometer_raw = struct.unpack("<H", data[14:16])[0]  # inHg/1000, dash=0
+            solar_rad_raw = struct.unpack("<H", data[16:18])[0]  # W/m², dash=32767
+            num_wind_samples = struct.unpack("<H", data[18:20])[0]  # count, dash=0
+            in_temp_raw = struct.unpack("<h", data[20:22])[0]  # °F/10, dash=32767
+            in_humidity_raw = data[22]  # %, dash=255
+            out_humidity_raw = data[23]  # %, dash=255
+            avg_wind_speed_raw = data[24]  # mph, dash=255
+            high_wind_speed_raw = data[25]  # mph, dash=0
+            dir_high_wind_raw = data[26]  # code 0-15, dash=255
+            prevailing_dir_raw = data[27]  # code 0-15, dash=255
+            avg_uv_raw = data[28]  # UV/10, dash=255
+            et_raw = data[29]  # in/1000, dash=0
 
             # Direction names
             dir_names = [
@@ -571,12 +514,16 @@ class VantageProtocol:
                     return dir_names[code]
                 return None
 
+            # Temperature conversion helper (F to C)
             def f_to_c(temp_f):
                 if temp_f is None:
                     return None
                 return round((temp_f - 32) * 5 / 9, 2)
 
+            # Build base record (common fields)
             out_temp_c = f_to_c(None if out_temp_raw == 32767 else out_temp_raw / 10.0)
+            # high_temp_c = f_to_c(None if high_temp_raw == -32768 else high_temp_raw / 10.0)
+            # low_temp_c = f_to_c(None if low_temp_raw == 32767 else low_temp_raw / 10.0)
             in_temp_c = f_to_c(None if in_temp_raw == 32767 else in_temp_raw / 10.0)
 
             record = {
@@ -585,23 +532,37 @@ class VantageProtocol:
                 "wind_speed_kmh": None
                 if avg_wind_speed_raw == 255
                 else round(avg_wind_speed_raw * 1.60934, 2),
-                "out_temp": out_temp_c,
-                "out_hum": None if out_humidity_raw == 255 else out_humidity_raw,
+                "out_temp": out_temp_c,  # C
+                "out_hum": None if out_humidity_raw == 255 else out_humidity_raw,  # %
+                #'high_out_temp_C': high_temp_c,
+                #'low_out_temp_C': low_temp_c,
+                #'rain_clicks': rain_clicks,
+                #'high_rain_rate_clicks_per_hr': None if high_rain_rate_clicks == 0 else high_rain_rate_clicks,
+                #'high_rain_rate_mm_per_hr': None if high_rain_rate_clicks == 0 else round(high_rain_rate_clicks * 0.254, 4),
                 "pres_hPa": None
                 if barometer_raw == 0
-                else round((barometer_raw / 1000.0) * 33.8639, 2),
+                else round(
+                    (barometer_raw / 1000.0) * 33.8639, 2
+                ),  # Convert inHg to hPa
                 "UV": None if avg_uv_raw == 255 else avg_uv_raw,
+                #'barometer_inHg': None if barometer_raw == 0 else round(barometer_raw / 1000.0, 3),
+                #'barometer_raw': barometer_raw,
                 "rain": round(rain_clicks * 0.2, 4)
                 if rain_clicks != 0
-                else rain_clicks,
-                "solar_rad": None if solar_rad_raw == 32767 else solar_rad_raw,
+                else rain_clicks,  # 1 click = 0.2 mm
+                "solar_rad": None if solar_rad_raw == 32767 else solar_rad_raw,  # W/m²
+                #'num_wind_samples': num_wind_samples,
                 "in_temp": in_temp_c,
                 "in_hum": None if in_humidity_raw == 255 else in_humidity_raw,
                 "rain_clicks": rain_clicks,
+                #'high_wind_speed_kmh': None if high_wind_speed_raw == 0 else round(high_wind_speed_raw * 1.60934, 2),
+                #'dir_high_wind': dir_text(dir_high_wind_raw),
+                #'record_type': 'Rev A' if is_rev_a else 'Rev B',
             }
             return record
 
-        except (ValueError, struct.error):
+        except (ValueError, struct.error) as e:
+            # Error parseando este registro, saltarlo
             return None
 
     def close(self):
@@ -623,9 +584,11 @@ def aggregate_to_hourly(records: List[dict]) -> List[dict]:
     if not records:
         return []
 
+    # Convertir a DataFrame
     df = pd.DataFrame(records)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
 
+    # Campos numéricos a promediar
     numeric_fields = [
         "out_temp",
         "out_hum",
@@ -636,25 +599,37 @@ def aggregate_to_hourly(records: List[dict]) -> List[dict]:
         "in_hum",
         "wind_speed_kmh",
     ]
+
+    # Campos acumulativos (sumar en lugar de promediar)
     accumulative_fields = ["rain", "rain_clicks"]
+
+    # Campos de texto a mantener (tomar el primero de cada grupo)
     text_fields = ["wind_dir"]
 
+    # Agrupar por hora truncando el timestamp
     df["hour"] = df["timestamp"].dt.floor("h")
 
+    # Crear diccionarios de agregación
     agg_dict = {field: "mean" for field in numeric_fields}
     for field in accumulative_fields:
-        agg_dict[field] = "sum"
+        agg_dict[field] = "sum"  # Sumar valores acumulativos
     for field in text_fields:
-        agg_dict[field] = "first"
+        agg_dict[field] = "first"  # Tomar el primer valor de cada grupo
 
+    # Agrupar y agregar
     hourly_df = df.groupby("hour", as_index=False).agg(agg_dict)
+
+    # Renombrar la columna 'hour' a 'timestamp'
     hourly_df.rename(columns={"hour": "timestamp"}, inplace=True)
 
+    # Redondear campos numéricos a 2 decimales y convertir a float
     for field in numeric_fields + accumulative_fields:
         hourly_df[field] = pd.to_numeric(hourly_df[field], errors="coerce").round(2)
 
+    # Convertir de vuelta a lista de diccionarios, manteniendo tipos numéricos
     records_list = hourly_df.to_dict("records")
 
+    # Asegurar que los valores None se mantengan como None en lugar de NaN
     for record in records_list:
         for key, value in record.items():
             if pd.isna(value):
@@ -671,8 +646,10 @@ def export_to_csv(records: List[dict], filename: str):
         print("No hay datos para exportar")
         return
 
+    # Convertir a DataFrame para escribir con tipos correctos
     df = pd.DataFrame(records)
 
+    # Define fieldnames in a consistent order with metric units
     fieldnames = [
         "timestamp",
         "wind_dir",
@@ -688,9 +665,11 @@ def export_to_csv(records: List[dict], filename: str):
         "rain_clicks",
     ]
 
+    # Seleccionar solo las columnas que existen
     existing_columns = [col for col in fieldnames if col in df.columns]
     df_to_export = df[existing_columns]
 
+    # Escribir a CSV preservando tipos numéricos
     df_to_export.to_csv(filename, index=False, float_format="%.2f")
 
     print(f"✓ Datos exportados a: {filename}")
@@ -700,6 +679,7 @@ def export_to_csv(records: List[dict], filename: str):
         print(f"    Out Temp: {records[0].get('out_temp')}°C")
         print(f"    Barometer: {records[0].get('pres_hPa')} hPa")
         print(f"    Prevailing Wind Dir: {records[0].get('wind_dir')}")
+        print(f"    Tipo: {records[0].get('record_type')}")
 
 
 def main():
@@ -708,43 +688,41 @@ def main():
     print("DESCARGA DE DATOS HISTÓRICOS - VANTAGE PRO/PRO2/VUE")
     print("=" * 60)
 
-    port = input(f"\nIngrese el puerto serial [{DEFAULT_PORT}]: ").strip()
-    if not port:
-        port = DEFAULT_PORT
+    # Configuración del puerto
+    port = input("\nIngrese el puerto serial (ej: COM3, /dev/ttyUSB0): ").strip()
 
-    print("\n¿Descargar DUMP COMPLETO? [s/n]")
-    choice = input().strip().lower()
+    # Solicitar fecha de inicio
+    print("\nIngrese la fecha/hora de inicio:")
+    fecha_str = input("Formato: YYYY-MM-DD HH:MM (ej: 2024-01-01 00:00): ").strip()
 
     try:
-        vantage = VantageProtocol(port)
+        start_date = datetime.strptime(fecha_str, "%Y-%m-%d %H:%M")
+    except ValueError:
+        print("✗ Formato de fecha inválido")
+        return
 
-        if choice in ["s", "si", "y", "yes"]:
-            records = vantage.download_full_dump()
-        else:
-            fecha_str = input("\nFecha/hora de inicio (YYYY-MM-DD HH:MM): ").strip()
-            try:
-                start_date = datetime.strptime(fecha_str, "%Y-%m-%d %H:%M")
-            except ValueError:
-                print("✗ Formato de fecha inválido")
-                vantage.close()
-                return
-            records = vantage.download_after_date(start_date)
+    # Conectar y descargar
+    try:
+        vantage = VantageProtocol(port)
+        records = vantage.download_after_date(start_date)
 
         if records:
+            # Agregar promedios de 1 hora
             print("\nCalculando promedios de 1 hora...")
             hourly_records = aggregate_to_hourly(records)
 
+            # Exportar a CSV
             filename = f"vantage_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             export_to_csv(hourly_records, filename)
 
+            # Mostrar resumen
             print("\n" + "=" * 60)
-            print("RESUMEN")
+            print("RESUMEN DE DATOS DESCARGADOS")
             print("=" * 60)
             print(f"Registros originales (30 min): {len(records)}")
-            print(f"Registros agregados (1 hora):  {len(hourly_records)}")
-            if hourly_records:
-                print(f"Primer registro: {hourly_records[0]['timestamp']}")
-                print(f"Último registro: {hourly_records[-1]['timestamp']}")
+            print(f"Registros agregados (1 hora): {len(hourly_records)}")
+            print(f"Primer registro: {hourly_records[0]['timestamp']}")
+            print(f"Último registro: {hourly_records[-1]['timestamp']}")
 
         vantage.close()
 

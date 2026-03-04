@@ -4,9 +4,19 @@ Script simple para leer la fecha/hora actual de una consola Davis Vantage Pro/Pr
 usando el comando GETTIME del protocolo serie.
 """
 
+import configparser
+import os
 import serial
 import time
 from datetime import datetime
+
+# ── Cargar configuración desde davis.conf ──
+_cfg = configparser.ConfigParser()
+_cfg.read(os.path.join(os.path.dirname(os.path.abspath(__file__)), "davis.conf"))
+
+DEFAULT_PORT = _cfg.get("serial", "DEFAULT_PORT", fallback="/dev/ttyUSB0")
+DEFAULT_BAUD = _cfg.getint("serial", "DEFAULT_BAUD", fallback=19200)
+DEFAULT_TIMEOUT = _cfg.getfloat("serial", "DEFAULT_TIMEOUT", fallback=1.2)
 
 
 def wake_up_console(ser: serial.Serial, retries: int = 3, delay: float = 0.5) -> bool:
@@ -22,7 +32,9 @@ def wake_up_console(ser: serial.Serial, retries: int = 3, delay: float = 0.5) ->
     return False
 
 
-def get_vantage_time(port: str, baudrate: int = 19200, timeout: float = 1.2):
+def get_vantage_time(
+    port: str, baudrate: int = DEFAULT_BAUD, timeout: float = DEFAULT_TIMEOUT
+):
     """Conectar al puerto serie, enviar GETTIME y mostrar la fecha/hora de la consola."""
     try:
         ser = serial.Serial(
@@ -88,15 +100,12 @@ def main():
     print("LECTURA DE HORA - DAVIS VANTAGE PRO/PRO2/VUE")
     print("=" * 60)
 
-    port = input("\nIngrese el puerto serial (ej: COM3, /dev/ttyUSB0): ").strip()
+    port = input(f"\nIngrese el puerto serial [{DEFAULT_PORT}]: ").strip()
     if not port:
-        print("✗ Puerto serial no especificado")
-        return
+        port = DEFAULT_PORT
 
     get_vantage_time(port)
 
 
 if __name__ == "__main__":
     main()
-
-
