@@ -452,13 +452,22 @@ class VantageProtocol:
     def _download_page(self, max_retries: int = 3) -> Optional[bytes]:
         """Descargar una página de 267 bytes con reintentos"""
         for attempt in range(max_retries):
+            # Consumir bytes sueltos que la consola envíe entre páginas
+            time.sleep(0.1)
+            if self.ser.in_waiting:
+                stray = self.ser.read(self.ser.in_waiting)
+                print(
+                    f"  ⚠ {len(stray)} bytes extra entre páginas: {stray.hex()} (ASCII: {stray!r})"
+                )
+
             page = self.ser.read(267)
             received_len = len(page)
 
             if received_len != 267:
                 if attempt < max_retries - 1:
                     print(
-                        f"  ⟳ Página incompleta ({received_len} bytes), reintento {attempt + 1}..."
+                        f"  ⟳ Página incompleta ({received_len} bytes, hex: {page.hex()[:40]}), "
+                        f"reintento {attempt + 1}..."
                     )
                     self.ser.write(b"\x21")  # NAK - pedir reenvío
                     self.ser.flush()
@@ -468,7 +477,8 @@ class VantageProtocol:
                     f"✗ Página incompleta: {received_len} bytes (timeout tras {max_retries} intentos)"
                 )
                 if received_len > 0:
-                    print(f"   Primeros bytes: {page.hex()[:40]}...")
+                    print(f"   Bytes recibidos (hex): {page.hex()}")
+                    print(f"   Bytes recibidos (raw): {page!r}")
                 return None
 
             # Verificar CRC
@@ -483,7 +493,7 @@ class VantageProtocol:
                     self.ser.flush()
                     time.sleep(0.5)
                     continue
-                print("✗ CRC inválido (tras {max_retries} intentos)")
+                print(f"✗ CRC inválido (tras {max_retries} intentos)")
                 return None
 
             self.ser.write(b"\x06")  # ACK
