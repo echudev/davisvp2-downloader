@@ -390,6 +390,8 @@ class VantageProtocol:
         print(f"Páginas a descargar: {num_pages}, Primer registro: {first_record}")
 
         # Enviar ACK para comenzar descarga
+        # Pausa crítica: dar tiempo a la consola para cambiar de TX a RX
+        time.sleep(0.1)
         self.ser.write(b"\x06")
         self.ser.flush()
 
@@ -438,6 +440,7 @@ class VantageProtocol:
 
             if crc_received != crc_calculated:
                 print(f"✗ CRC inválido en página {page_num + 1}")
+                time.sleep(0.1)
                 self.ser.write(b"\x21")  # NAK - pedir reenvío
                 self.ser.flush()
                 break
@@ -451,6 +454,8 @@ class VantageProtocol:
             )
 
             # Enviar ACK para siguiente página
+            # Pausa crítica: tiempo para turnaround del puerto de la consola
+            time.sleep(0.1)
             self.ser.write(b"\x06")
             self.ser.flush()
 
