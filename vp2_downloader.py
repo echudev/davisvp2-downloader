@@ -335,12 +335,6 @@ class VantageProtocol:
     def download_after_date(self, start_date: datetime) -> List[dict]:
         """
         Descargar datos después de una fecha específica usando DMPAFT
-
-        Args:
-            start_date: Fecha/hora de inicio
-
-        Returns:
-            Lista de registros meteorológicos
         """
         if not self.wake_up():
             return []
@@ -362,20 +356,19 @@ class VantageProtocol:
             print("✗ Error enviando comando DMPAFT")
             return []
 
-        # Enviar date_stamp y time_stamp
+        # Enviar date_stamp y time_stamp con CRC
         data = struct.pack("<HH", date_stamp, time_stamp)
         crc = self.calculate_crc(data)
         crc_bytes = struct.pack(">H", crc)  # MSB first para CRC
 
         self.ser.write(data + crc_bytes)
 
-        # Leer respuesta
+        # Leer respuesta: ACK + header (pages + offset + CRC)
         ack = self.ser.read(1)
         if ack != b"\x06":
-            print("✗ Error: CRC inválido o fecha no encontrada")
+            print(f"✗ Error: respuesta inesperada: {ack.hex() if ack else 'timeout'}")
             return []
 
-        # Leer número de páginas
         header = self.ser.read(6)
         if len(header) < 6:
             print("✗ Error leyendo header")
@@ -384,24 +377,82 @@ class VantageProtocol:
         num_pages = struct.unpack("<H", header[0:2])[0]
         first_record = struct.unpack("<H", header[2:4])[0]
 
+        # Verificar CRC del header
+        header_crc_received = struct.unpack(">H", header[4:6])[0]
+        header_crc_calculated = self.calculate_crc(header[0:4])
+        if header_crc_received != header_crc_calculated:
+            print(
+                f"✗ Header CRC inválido (recibido: {header_crc_received:#06x}, "
+                f"calculado: {header_crc_calculated:#06x})"
+            )
+            return []
+
         print(f"Páginas a descargar: {num_pages}, Primer registro: {first_record}")
 
-        # Comenzar descarga
+        # Enviar ACK para comenzar descarga
         self.ser.write(b"\x06")
         self.ser.flush()
 
         records = []
         for page_num in range(num_pages):
-            page_data = self._download_page()
-            if page_data:
-                page_records = self._parse_page(page_data, page_num, first_record)
-                records.extend(page_records)
-                print(
-                    f"Página {page_num + 1}/{num_pages} descargada ({len(page_records)} registros)"
-                )
-            else:
-                print(f"✗ Error descargando página {page_num + 1}")
+            # Leer 267 bytes de la página
+            page = self.ser.read(267)
+            received_len = len(page)
+
+            # Si recibimos pocos bytes, intentar descartar y releer
+            if 0 < received_len < 10:
+                print(f"  ⚠ {received_len} bytes extra descartados: {page.hex()}")
+                page = self.ser.read(267)
+                received_len = len(page)
+
+            if received_len != 267:
+                print(f"✗ Página {page_num + 1}: {received_len} bytes recibidos")
+
+                # Diagnóstico: esperar y ver si llegan datos
+                time.sleep(1.0)
+                pending = self.ser.in_waiting
+                print(f"  Buffer después de 1s: {pending} bytes")
+                if pending:
+                    extra = self.ser.read(pending)
+                    print(f"  Datos tardíos: {extra.hex()[:60]}")
+
+                # Intentar despertar la consola
+                print("  Intentando wake-up...")
+                self.ser.write(b"\n")
+                self.ser.flush()
+                time.sleep(1.0)
+                pending = self.ser.in_waiting
+                if pending:
+                    wake_resp = self.ser.read(pending)
+                    print(f"  Respuesta wake-up: {wake_resp!r}")
+                    print("  → La consola se durmió durante la descarga")
+                else:
+                    print("  → Sin respuesta al wake-up")
+
                 break
+
+            # Verificar CRC de la página
+            page_data = page[:-2]
+            crc_received = struct.unpack(">H", page[-2:])[0]
+            crc_calculated = self.calculate_crc(page_data)
+
+            if crc_received != crc_calculated:
+                print(f"✗ CRC inválido en página {page_num + 1}")
+                self.ser.write(b"\x21")  # NAK - pedir reenvío
+                self.ser.flush()
+                break
+
+            # Parsear registros de esta página
+            page_records = self._parse_page(page, page_num, first_record)
+            records.extend(page_records)
+            print(
+                f"Página {page_num + 1}/{num_pages} descargada "
+                f"({len(page_records)} registros)"
+            )
+
+            # Enviar ACK para siguiente página
+            self.ser.write(b"\x06")
+            self.ser.flush()
 
         print(f"\n✓ Descarga completa: {len(records)} registros obtenidos")
         return records
