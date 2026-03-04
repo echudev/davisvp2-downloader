@@ -388,6 +388,7 @@ class VantageProtocol:
 
         # Comenzar descarga
         self.ser.write(b"\x06")
+        self.ser.flush()
 
         records = []
         for page_num in range(num_pages):
@@ -448,30 +449,48 @@ class VantageProtocol:
         print(f"\n✓ Descarga completa: {len(records)} registros obtenidos")
         return records
 
-    def _download_page(self) -> Optional[bytes]:
-        """Descargar una página de 267 bytes"""
-        page = self.ser.read(267)
-        received_len = len(page)
+    def _download_page(self, max_retries: int = 3) -> Optional[bytes]:
+        """Descargar una página de 267 bytes con reintentos"""
+        for attempt in range(max_retries):
+            page = self.ser.read(267)
+            received_len = len(page)
 
-        if received_len != 267:
-            print(f"✗ Página incompleta: {received_len} bytes (timeout)")
-            if received_len > 0:
-                print(f"   Primeros bytes: {page.hex()[:40]}...")
-            return None
+            if received_len != 267:
+                if attempt < max_retries - 1:
+                    print(
+                        f"  ⟳ Página incompleta ({received_len} bytes), reintento {attempt + 1}..."
+                    )
+                    self.ser.write(b"\x21")  # NAK - pedir reenvío
+                    self.ser.flush()
+                    time.sleep(0.5)
+                    continue
+                print(
+                    f"✗ Página incompleta: {received_len} bytes (timeout tras {max_retries} intentos)"
+                )
+                if received_len > 0:
+                    print(f"   Primeros bytes: {page.hex()[:40]}...")
+                return None
 
-        # Verificar CRC
-        data = page[:-2]
-        crc_received = struct.unpack(">H", page[-2:])[0]
-        crc_calculated = self.calculate_crc(data)
+            # Verificar CRC
+            data = page[:-2]
+            crc_received = struct.unpack(">H", page[-2:])[0]
+            crc_calculated = self.calculate_crc(data)
 
-        if crc_received != crc_calculated:
-            print("✗ CRC inválido")
-            self.ser.write(b"\x21")  # NAK
-            return None
+            if crc_received != crc_calculated:
+                if attempt < max_retries - 1:
+                    print(f"  ⟳ CRC inválido, reintento {attempt + 1}...")
+                    self.ser.write(b"\x21")  # NAK - pedir reenvío
+                    self.ser.flush()
+                    time.sleep(0.5)
+                    continue
+                print("✗ CRC inválido (tras {max_retries} intentos)")
+                return None
 
-        self.ser.write(b"\x06")  # ACK
-        time.sleep(0.15)
-        return page
+            self.ser.write(b"\x06")  # ACK
+            self.ser.flush()
+            return page
+
+        return None
 
     def _parse_page(self, page: bytes, page_num: int, first_record: int) -> List[dict]:
         """Parsear una página de 5 registros"""
