@@ -389,75 +389,65 @@ class VantageProtocol:
 
         print(f"Páginas a descargar: {num_pages}, Primer registro: {first_record}")
 
-        # Enviar ACK para comenzar descarga
-        # Pausa crítica: dar tiempo a la consola para cambiar de TX a RX
-        time.sleep(0.1)
+        # Enviar ACK inicial INMEDIATAMENTE tras leer el header
         self.ser.write(b"\x06")
         self.ser.flush()
 
         records = []
         for page_num in range(num_pages):
-            # Leer 267 bytes de la página
-            page = self.ser.read(267)
-            received_len = len(page)
-
-            # Si recibimos pocos bytes, intentar descartar y releer
-            if 0 < received_len < 10:
-                print(f"  ⚠ {received_len} bytes extra descartados: {page.hex()}")
+            for attempt in range(3):
+                # Usamos read() asegurando leer todo el bloque o esperar el timeout de 10s
                 page = self.ser.read(267)
                 received_len = len(page)
 
-            if received_len != 267:
-                print(f"✗ Página {page_num + 1}: {received_len} bytes recibidos")
+                if received_len != 267:
+                    # Si la consola aborta, envía \n\r (0x0A 0x0D)
+                    if page == b"\n\r":
+                        print(
+                            "✗ La consola abortó abruptamente la descarga (se durmió)."
+                        )
+                        return records
 
-                # Diagnóstico: esperar y ver si llegan datos
-                time.sleep(1.0)
-                pending = self.ser.in_waiting
-                print(f"  Buffer después de 1s: {pending} bytes")
-                if pending:
-                    extra = self.ser.read(pending)
-                    print(f"  Datos tardíos: {extra.hex()[:60]}")
+                    print(
+                        f"  ⟳ Página {page_num + 1} incompleta ({received_len} bytes recibidos), reintento {attempt + 1}..."
+                    )
+                    if attempt < 2:
+                        self.ser.write(b"\x21")  # NAK
+                        self.ser.flush()
+                        continue
+                    else:
+                        print("✗ Error fatal descargando la página.")
+                        return records
 
-                # Intentar despertar la consola
-                print("  Intentando wake-up...")
-                self.ser.write(b"\n")
-                self.ser.flush()
-                time.sleep(1.0)
-                pending = self.ser.in_waiting
-                if pending:
-                    wake_resp = self.ser.read(pending)
-                    print(f"  Respuesta wake-up: {wake_resp!r}")
-                    print("  → La consola se durmió durante la descarga")
+                # Verificar CRC de la página
+                page_data = page[:-2]
+                crc_received = struct.unpack(">H", page[-2:])[0]
+                crc_calculated = self.calculate_crc(page_data)
+
+                if crc_received == crc_calculated:
+                    # ¡ÉXITO! Enviar ACK INMEDIATAMENTE a la consola
+                    # La consola requiere el ACK rápido o aborta la descarga
+                    self.ser.write(b"\x06")
+                    self.ser.flush()
+
+                    # Ahora decodificamos tranquilos, la consola ya envía la sig. página
+                    page_records = self._parse_page(page, page_num, first_record)
+                    records.extend(page_records)
+                    print(
+                        f"Página {page_num + 1}/{num_pages} descargada ({len(page_records)} registros)"
+                    )
+                    break  # Salir del bucle de reintento
                 else:
-                    print("  → Sin respuesta al wake-up")
-
-                break
-
-            # Verificar CRC de la página
-            page_data = page[:-2]
-            crc_received = struct.unpack(">H", page[-2:])[0]
-            crc_calculated = self.calculate_crc(page_data)
-
-            if crc_received != crc_calculated:
-                print(f"✗ CRC inválido en página {page_num + 1}")
-                time.sleep(0.1)
-                self.ser.write(b"\x21")  # NAK - pedir reenvío
-                self.ser.flush()
-                break
-
-            # Parsear registros de esta página
-            page_records = self._parse_page(page, page_num, first_record)
-            records.extend(page_records)
-            print(
-                f"Página {page_num + 1}/{num_pages} descargada "
-                f"({len(page_records)} registros)"
-            )
-
-            # Enviar ACK para siguiente página
-            # Pausa crítica: tiempo para turnaround del puerto de la consola
-            time.sleep(0.1)
-            self.ser.write(b"\x06")
-            self.ser.flush()
+                    print(
+                        f"  ⟳ CRC inválido en página {page_num + 1}, reintento {attempt + 1}..."
+                    )
+                    if attempt < 2:
+                        self.ser.write(b"\x21")  # NAK
+                        self.ser.flush()
+                        continue
+                    else:
+                        print("✗ Error fatal de CRC tras 3 intentos.")
+                        return records
 
         print(f"\n✓ Descarga completa: {len(records)} registros obtenidos")
         return records
