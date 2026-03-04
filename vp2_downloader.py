@@ -386,10 +386,8 @@ class VantageProtocol:
 
         print(f"Páginas a descargar: {num_pages}, Primer registro: {first_record}")
 
-        # Comenzar descarga - pausa crítica para que la consola prepare la primera página
+        # Comenzar descarga
         self.ser.write(b"\x06")
-        time.sleep(1.5)
-        self.ser.reset_input_buffer()
 
         records = []
         for page_num in range(num_pages):
@@ -708,11 +706,10 @@ def main():
     """Función principal"""
     print("=" * 60)
     print("DESCARGA DE DATOS HISTÓRICOS - VANTAGE PRO/PRO2/VUE")
+    print(f"Puerto serial: {DEFAULT_PORT}")
     print("=" * 60)
 
-    port = input(f"\nIngrese el puerto serial [{DEFAULT_PORT}]: ").strip()
-    if not port:
-        port = DEFAULT_PORT
+    port = DEFAULT_PORT
 
     print("\n¿Descargar DUMP COMPLETO? [s/n]")
     choice = input().strip().lower()

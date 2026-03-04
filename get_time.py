@@ -98,13 +98,10 @@ def get_vantage_time(
 def main():
     print("=" * 60)
     print("LECTURA DE HORA - DAVIS VANTAGE PRO/PRO2/VUE")
+    print(f"Puerto serial: {DEFAULT_PORT}")
     print("=" * 60)
 
-    port = input(f"\nIngrese el puerto serial [{DEFAULT_PORT}]: ").strip()
-    if not port:
-        port = DEFAULT_PORT
-
-    get_vantage_time(port)
+    get_vantage_time(DEFAULT_PORT)
 
 
 if __name__ == "__main__":
